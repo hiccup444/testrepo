@@ -18,6 +18,7 @@ namespace RoomScannerMod
         public static List<RoomInfo> CachedRoomList = new List<RoomInfo>();
         public static Dictionary<string, StoredRoomInfo> AllRoomsEverSeen = new Dictionary<string, StoredRoomInfo>();
         public static RoomInfo LastJoinedRoom;
+        public static string LastAttemptedRoomName;
         private RoomJoinerUI _roomJoinerUI;
 
         public class StoredRoomInfo
@@ -208,6 +209,7 @@ namespace RoomScannerMod
                 if (!string.IsNullOrEmpty(roomName))
                 {
                     Debug.Log($"[Room Scanner] Attempting to join room by name: {roomName}");
+                    RoomScannerPlugin.LastAttemptedRoomName = roomName;
                     PhotonNetwork.JoinRoom(roomName);
                 }
                 else
@@ -359,7 +361,32 @@ namespace RoomScannerMod
             yield return new WaitForSecondsRealtime(3f);
         }
 
-        public void OnJoinRoomFailed(short returnCode, string message) => Debug.LogError($"[Room Scanner] Failed to join room: {message}");
+        public void OnJoinRoomFailed(short returnCode, string message)
+        {
+            Debug.LogError($"[Room Scanner] Failed to join room: {message} (Error code: {returnCode})");
+
+            // Remove the room from our history if it doesn't exist
+            if (!string.IsNullOrEmpty(RoomScannerPlugin.LastAttemptedRoomName))
+            {
+                string failedRoomName = RoomScannerPlugin.LastAttemptedRoomName;
+
+                // Error code 32758 typically means room doesn't exist
+                if (returnCode == 32758 || message.Contains("not exist") || message.Contains("not found"))
+                {
+                    if (RoomScannerPlugin.AllRoomsEverSeen.ContainsKey(failedRoomName))
+                    {
+                        Debug.Log($"[Room Scanner] Room '{failedRoomName}' no longer exists. Removing from history.");
+                        RoomScannerPlugin.AllRoomsEverSeen.Remove(failedRoomName);
+
+                        // Also remove from cached list if present
+                        RoomScannerPlugin.CachedRoomList.RemoveAll(r => r.Name == failedRoomName);
+                    }
+                }
+
+                // Clear the attempted room name
+                RoomScannerPlugin.LastAttemptedRoomName = null;
+            }
+        }
         public void OnCreateRoomFailed(short returnCode, string message) { }
         public void OnCreatedRoom() { }
         public void OnJoinRandomFailed(short returnCode, string message) { }
