@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
 using BepInEx;
 using Photon.Pun;
 using Photon.Realtime;
@@ -210,12 +211,35 @@ namespace RoomScannerMod
                 {
                     Debug.Log($"[Room Scanner] Attempting to join room by name: {roomName}");
                     RoomScannerPlugin.LastAttemptedRoomName = roomName;
-                    PhotonNetwork.JoinRoom(roomName);
+
+                    // Leave current room first if we're in one
+                    if (PhotonNetwork.InRoom)
+                    {
+                        Debug.Log("[Room Scanner] Leaving current room before joining new one...");
+                        PhotonNetwork.LeaveRoom();
+                        StartCoroutine(JoinRoomAfterLeave(roomName));
+                    }
+                    else
+                    {
+                        PhotonNetwork.JoinRoom(roomName);
+                    }
                 }
                 else
                 {
                     Debug.LogWarning("[Room Scanner] Room name is empty.");
                 }
+            }
+
+            private IEnumerator JoinRoomAfterLeave(string roomName)
+            {
+                while (PhotonNetwork.InRoom)
+                {
+                    yield return null;
+                }
+                yield return new WaitForSeconds(0.5f);
+
+                Debug.Log($"[Room Scanner] Now joining room: {roomName}");
+                PhotonNetwork.JoinRoom(roomName);
             }
         }
 
@@ -333,17 +357,39 @@ namespace RoomScannerMod
             Debug.Log("[Room Scanner] Successfully joined a room.");
 
             var sceneName = "Airport";
-            var room = RoomScannerPlugin.LastJoinedRoom;
-            if (room != null && room.CustomProperties.TryGetValue("CurrentScene", out var sceneProp) && sceneProp is string scene)
+
+            // Get scene from current room properties
+            if (PhotonNetwork.CurrentRoom != null && PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue("CurrentScene", out var currentSceneProp) && currentSceneProp is string currentScene)
             {
-                sceneName = scene;
+                sceneName = currentScene;
                 Debug.Log($"[Room Scanner] Found scene in room properties: {sceneName}");
             }
 
+            // Update the connection service state to match our room
             var connectionService = GameHandler.GetService<ConnectionService>();
-            var joinState = connectionService.StateMachine.SwitchState<JoinSpecificRoomState>(false);
-            joinState.RoomName = PhotonNetwork.CurrentRoom.Name;
-            joinState.RegionToJoin = PhotonNetwork.CloudRegion;
+            if (connectionService != null)
+            {
+                // Try to switch to InRoomState if not already there
+                var currentState = connectionService.StateMachine.CurrentState;
+                if (!(currentState is InRoomState))
+                {
+                    Debug.Log("[Room Scanner] Switching to InRoomState...");
+                    var inRoomState = connectionService.StateMachine.SwitchState<InRoomState>(false);
+                    if (inRoomState != null)
+                    {
+                        // Reset the customization flag to ensure it loads
+                        inRoomState.hasLoadedCustomization = false;
+                    }
+                }
+            }
+
+            // Check if we're already in the correct scene
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == sceneName)
+            {
+                Debug.Log($"[Room Scanner] Already in scene {sceneName}.");
+                StartCoroutine(ForceCustomizationRefresh());
+                return;
+            }
 
             RetrievableResourceSingleton<LoadingScreenHandler>.Instance.Load(
                 LoadingScreen.LoadingScreenType.Basic,
@@ -351,7 +397,62 @@ namespace RoomScannerMod
                 new IEnumerator[] { LoadSceneCoroutine(sceneName) }
             );
 
-            Debug.Log("[Room Scanner] Triggered scene loading and initialization.");
+            Debug.Log("[Room Scanner] Triggered scene loading.");
+        }
+
+        private IEnumerator ForceCustomizationRefresh()
+        {
+            yield return new WaitForSeconds(1f);
+
+            // First, ensure InRoomState hasn't marked customization as loaded
+            var connectionService = GameHandler.GetService<ConnectionService>();
+            if (connectionService != null)
+            {
+                var inRoomState = connectionService.StateMachine.CurrentState as InRoomState;
+                if (inRoomState != null)
+                {
+                    Debug.Log($"[Room Scanner] InRoomState.hasLoadedCustomization = {inRoomState.hasLoadedCustomization}");
+                    if (inRoomState.hasLoadedCustomization)
+                    {
+                        Debug.Log("[Room Scanner] Resetting hasLoadedCustomization to force Steam cosmetics reload.");
+                        inRoomState.hasLoadedCustomization = false;
+                    }
+                }
+            }
+
+            // Find all characters and force their customization to refresh
+            var characters = UnityEngine.Object.FindObjectsOfType<CharacterCustomization>();
+            Debug.Log($"[Room Scanner] Found {characters.Length} characters to refresh customization.");
+
+            foreach (var customization in characters)
+            {
+                var character = customization.GetComponent<Character>();
+                if (character != null && character.photonView != null)
+                {
+                    // For local character, force Steam cosmetics reload
+                    if (character.photonView.IsMine && character.IsLocal)
+                    {
+                        Debug.Log("[Room Scanner] Forcing Steam cosmetics reload for local character.");
+
+                        // Call the private method using reflection
+                        var tryGetMethod = customization.GetType().GetMethod("TryGetCosmeticsFromSteam",
+                            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+                        if (tryGetMethod != null)
+                        {
+                            tryGetMethod.Invoke(customization, null);
+                        }
+                    }
+
+                    // Trigger the OnPlayerDataChange for all characters
+                    var playerDataService = GameHandler.GetService<PersistentPlayerDataService>();
+                    if (playerDataService != null)
+                    {
+                        var playerData = playerDataService.GetPlayerData(character.photonView.Owner);
+                        playerDataService.SetPlayerData(character.photonView.Owner, playerData);
+                    }
+                }
+            }
         }
 
         private IEnumerator LoadSceneCoroutine(string sceneName)
