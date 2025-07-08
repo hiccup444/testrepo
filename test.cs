@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using BepInEx;
 using Photon.Pun;
@@ -48,6 +49,13 @@ namespace RoomScannerMod
 
             PhotonNetwork.AddCallbackTarget(this);
             Logger.LogInfo("[Room Scanner] Initialization complete. Waiting for Photon connection.");
+            
+            // Try to enable more room visibility
+            if (PhotonNetwork.PhotonServerSettings != null)
+            {
+                Logger.LogInfo($"[Room Scanner] Current region: {PhotonNetwork.PhotonServerSettings.AppSettings.FixedRegion}");
+                Logger.LogInfo($"[Room Scanner] Enable lobby stats: {PhotonNetwork.PhotonServerSettings.AppSettings.EnableLobbyStatistics}");
+            }
         }
 
         private void Update()
@@ -55,6 +63,34 @@ namespace RoomScannerMod
             if (Input.GetKeyDown(KeyCode.F1))
             {
                 _roomJoinerUI?.ToggleUI();
+            }
+            
+            if (Input.GetKeyDown(KeyCode.F3))
+            {
+                ShowLobbyInfo();
+            }
+        }
+        
+        private void ShowLobbyInfo()
+        {
+            Logger.LogInfo($"[Room Scanner] === LOBBY INFO ===");
+            Logger.LogInfo($"Connected: {PhotonNetwork.IsConnected}");
+            Logger.LogInfo($"In Lobby: {PhotonNetwork.InLobby}");
+            Logger.LogInfo($"Current Region: {PhotonNetwork.CloudRegion}");
+            Logger.LogInfo($"Current Lobby: {PhotonNetwork.CurrentLobby?.Name ?? "null"} (Type: {PhotonNetwork.CurrentLobby?.Type.ToString() ?? "null"})");
+            Logger.LogInfo($"Network Client State: {PhotonNetwork.NetworkingClient.State}");
+            Logger.LogInfo($"Server: {PhotonNetwork.ServerAddress}");
+            
+            if (PhotonNetwork.NetworkingClient.RegionHandler != null)
+            {
+                Logger.LogInfo($"Available Regions: {string.Join(", ", PhotonNetwork.NetworkingClient.RegionHandler.EnabledRegions)}");
+            }
+            
+            // Log some matchmaking-related properties if available
+            if (PhotonNetwork.LocalPlayer != null)
+            {
+                Logger.LogInfo($"Local Player ID: {PhotonNetwork.LocalPlayer.ActorNumber}");
+                Logger.LogInfo($"Local Player Properties: {string.Join(", ", PhotonNetwork.LocalPlayer.CustomProperties.Select(kvp => $"{kvp.Key}={kvp.Value}"))}");
             }
         }
 
@@ -184,6 +220,14 @@ namespace RoomScannerMod
                     Debug.Log("[Room Scanner] Leaving lobby to refresh room list...");
                     refreshButtonText.text = "Reconnecting...";
                     refreshButton.interactable = false;
+                    
+                    // Store current lobby info
+                    var currentLobby = PhotonNetwork.CurrentLobby;
+                    if (currentLobby != null)
+                    {
+                        Debug.Log($"[Room Scanner] Current lobby: {currentLobby.Name}, Type: {currentLobby.Type}");
+                    }
+                    
                     PhotonNetwork.LeaveLobby();
                     StartCoroutine(RejoinLobbyAfterDelay());
                 }
@@ -211,7 +255,7 @@ namespace RoomScannerMod
                 {
                     Debug.Log($"[Room Scanner] Attempting to join room by name: {roomName}");
                     RoomScannerPlugin.LastAttemptedRoomName = roomName;
-
+                    
                     // Leave current room first if we're in one
                     if (PhotonNetwork.InRoom)
                     {
@@ -229,7 +273,7 @@ namespace RoomScannerMod
                     Debug.LogWarning("[Room Scanner] Room name is empty.");
                 }
             }
-
+            
             private IEnumerator JoinRoomAfterLeave(string roomName)
             {
                 while (PhotonNetwork.InRoom)
@@ -237,7 +281,7 @@ namespace RoomScannerMod
                     yield return null;
                 }
                 yield return new WaitForSeconds(0.5f);
-
+                
                 Debug.Log($"[Room Scanner] Now joining room: {roomName}");
                 PhotonNetwork.JoinRoom(roomName);
             }
@@ -324,12 +368,12 @@ namespace RoomScannerMod
             {
                 var room = kvp.Value;
                 string status = room.IsCurrentlyActive ? "[ACTIVE]" : "[INACTIVE]";
-                string timeSince = (System.DateTime.Now - room.LastSeen).TotalSeconds < 60
+                string timeSince = (System.DateTime.Now - room.LastSeen).TotalSeconds < 60 
                     ? $"{(int)(System.DateTime.Now - room.LastSeen).TotalSeconds}s ago"
                     : $"{(int)(System.DateTime.Now - room.LastSeen).TotalMinutes}m ago";
-
+                
                 Debug.Log($"[Room Scanner] {status} Room: {room.Name}, Players: {room.LastSeenPlayerCount}/{room.MaxPlayers}, Last seen: {timeSince}");
-
+                
                 if (room.CustomProperties != null)
                 {
                     foreach (var prop in room.CustomProperties)
@@ -343,7 +387,7 @@ namespace RoomScannerMod
             Debug.Log($"[Room Scanner] === Active: {roomList.Count}, Total seen: {RoomScannerPlugin.AllRoomsEverSeen.Count} ===");
         }
 
-        public void OnJoinedLobby()
+        public void OnJoinedLobby() 
         {
             Debug.Log("[Room Scanner] Joined a Photon lobby.");
             Debug.Log("[Room Scanner] Note: Photon automatically sends room list updates periodically while in lobby.");
@@ -357,7 +401,7 @@ namespace RoomScannerMod
             Debug.Log("[Room Scanner] Successfully joined a room.");
 
             var sceneName = "Airport";
-
+            
             // Get scene from current room properties
             if (PhotonNetwork.CurrentRoom != null && PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue("CurrentScene", out var currentSceneProp) && currentSceneProp is string currentScene)
             {
@@ -399,11 +443,11 @@ namespace RoomScannerMod
 
             Debug.Log("[Room Scanner] Triggered scene loading.");
         }
-
+        
         private IEnumerator ForceCustomizationRefresh()
         {
             yield return new WaitForSeconds(1f);
-
+            
             // First, ensure InRoomState hasn't marked customization as loaded
             var connectionService = GameHandler.GetService<ConnectionService>();
             if (connectionService != null)
@@ -419,11 +463,11 @@ namespace RoomScannerMod
                     }
                 }
             }
-
+            
             // Find all characters and force their customization to refresh
             var characters = UnityEngine.Object.FindObjectsOfType<CharacterCustomization>();
             Debug.Log($"[Room Scanner] Found {characters.Length} characters to refresh customization.");
-
+            
             foreach (var customization in characters)
             {
                 var character = customization.GetComponent<Character>();
@@ -433,17 +477,17 @@ namespace RoomScannerMod
                     if (character.photonView.IsMine && character.IsLocal)
                     {
                         Debug.Log("[Room Scanner] Forcing Steam cosmetics reload for local character.");
-
+                        
                         // Call the private method using reflection
-                        var tryGetMethod = customization.GetType().GetMethod("TryGetCosmeticsFromSteam",
+                        var tryGetMethod = customization.GetType().GetMethod("TryGetCosmeticsFromSteam", 
                             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
+                        
                         if (tryGetMethod != null)
                         {
                             tryGetMethod.Invoke(customization, null);
                         }
                     }
-
+                    
                     // Trigger the OnPlayerDataChange for all characters
                     var playerDataService = GameHandler.GetService<PersistentPlayerDataService>();
                     if (playerDataService != null)
@@ -465,12 +509,12 @@ namespace RoomScannerMod
         public void OnJoinRoomFailed(short returnCode, string message)
         {
             Debug.LogError($"[Room Scanner] Failed to join room: {message} (Error code: {returnCode})");
-
+            
             // Remove the room from our history if it doesn't exist
             if (!string.IsNullOrEmpty(RoomScannerPlugin.LastAttemptedRoomName))
             {
                 string failedRoomName = RoomScannerPlugin.LastAttemptedRoomName;
-
+                
                 // Error code 32758 typically means room doesn't exist
                 if (returnCode == 32758 || message.Contains("not exist") || message.Contains("not found"))
                 {
@@ -478,19 +522,22 @@ namespace RoomScannerMod
                     {
                         Debug.Log($"[Room Scanner] Room '{failedRoomName}' no longer exists. Removing from history.");
                         RoomScannerPlugin.AllRoomsEverSeen.Remove(failedRoomName);
-
+                        
                         // Also remove from cached list if present
                         RoomScannerPlugin.CachedRoomList.RemoveAll(r => r.Name == failedRoomName);
                     }
                 }
-
+                
                 // Clear the attempted room name
                 RoomScannerPlugin.LastAttemptedRoomName = null;
             }
         }
         public void OnCreateRoomFailed(short returnCode, string message) { }
         public void OnCreatedRoom() { }
-        public void OnJoinRandomFailed(short returnCode, string message) { }
+        public void OnJoinRandomFailed(short returnCode, string message) 
+        {
+            Debug.LogError($"[Room Scanner] JoinRandomRoom failed: {message} (Code: {returnCode})");
+        }
         public void OnLeftRoom() => Debug.Log("[Room Scanner] Left the room.");
         public void OnFriendListUpdate(List<FriendInfo> friendList) { }
     }
