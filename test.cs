@@ -1,19 +1,34 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using BepInEx;
 using Photon.Pun;
 using Photon.Realtime;
 using UnityEngine;
+using UnityEngine.UI;
 using Zorro.Core;
+using static RoomScannerMod.RoomScannerPlugin;
 
 namespace RoomScannerMod
 {
-    [BepInPlugin("com.hiccup.roomscanner", "Room Scanner Mod", "1.0.8")]
+    [BepInPlugin("com.hiccup.roomscanner", "Room Scanner Mod", "1.0.9")]
     public class RoomScannerPlugin : BaseUnityPlugin, IConnectionCallbacks
     {
         public static RoomScannerPlugin Instance;
         public static List<RoomInfo> CachedRoomList = new List<RoomInfo>();
+        public static Dictionary<string, StoredRoomInfo> AllRoomsEverSeen = new Dictionary<string, StoredRoomInfo>();
         public static RoomInfo LastJoinedRoom;
+        private RoomJoinerUI _roomJoinerUI;
+
+        public class StoredRoomInfo
+        {
+            public string Name { get; set; }
+            public int LastSeenPlayerCount { get; set; }
+            public int MaxPlayers { get; set; }
+            public ExitGames.Client.Photon.Hashtable CustomProperties { get; set; }
+            public bool IsCurrentlyActive { get; set; }
+            public System.DateTime LastSeen { get; set; }
+        }
 
         private void Awake()
         {
@@ -24,6 +39,11 @@ namespace RoomScannerMod
             go.AddComponent<RoomLogger>();
             DontDestroyOnLoad(go);
 
+            var uiObj = new GameObject("RoomJoinerUI");
+            var ui = uiObj.AddComponent<RoomJoinerUI>();
+            _roomJoinerUI = ui;
+            DontDestroyOnLoad(uiObj);
+
             PhotonNetwork.AddCallbackTarget(this);
             Logger.LogInfo("[Room Scanner] Initialization complete. Waiting for Photon connection.");
         }
@@ -32,22 +52,169 @@ namespace RoomScannerMod
         {
             if (Input.GetKeyDown(KeyCode.F1))
             {
-                if (CachedRoomList.Count == 0)
-                {
-                    Logger.LogWarning("[Room Scanner] No rooms available to join.");
-                    return;
-                }
-
-                var firstRoom = CachedRoomList[0];
-                Logger.LogInfo($"[Room Scanner] Attempting to join room: {firstRoom.Name}");
-                LastJoinedRoom = firstRoom;
-                PhotonNetwork.JoinRoom(firstRoom.Name);
+                _roomJoinerUI?.ToggleUI();
             }
         }
 
         private void OnDestroy()
         {
             PhotonNetwork.RemoveCallbackTarget(this);
+        }
+
+        public class RoomJoinerUI : MonoBehaviour
+        {
+            private GameObject canvasObj;
+            private bool isVisible = true;
+            private InputField inputField;
+            private Button joinButton;
+            private Button refreshButton;
+            private Text refreshButtonText;
+
+            public void ToggleUI()
+            {
+                isVisible = !isVisible;
+                if (canvasObj != null)
+                    canvasObj.SetActive(isVisible);
+
+                Debug.Log($"[Room Scanner] UI toggled {(isVisible ? "on" : "off")}");
+            }
+
+            private void Awake()
+            {
+                CreateUI();
+                DontDestroyOnLoad(canvasObj);
+                canvasObj.SetActive(isVisible);
+            }
+
+            private void CreateUI()
+            {
+                canvasObj = new GameObject("RoomJoinerCanvas");
+                var canvas = canvasObj.AddComponent<Canvas>();
+                canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+                canvas.sortingOrder = 1000;
+                canvasObj.AddComponent<CanvasScaler>();
+                canvasObj.AddComponent<GraphicRaycaster>();
+
+                // Panel - increased height for additional button
+                var panelObj = new GameObject("Panel");
+                panelObj.transform.SetParent(canvasObj.transform);
+                var panel = panelObj.AddComponent<Image>();
+                panel.color = new Color(0, 0, 0, 0.5f);
+                var panelRect = panel.GetComponent<RectTransform>();
+                panelRect.sizeDelta = new Vector2(300, 200);
+                panelRect.localPosition = Vector3.zero;
+
+                // InputField
+                var inputObj = new GameObject("InputField");
+                inputObj.transform.SetParent(panelObj.transform);
+                var inputImage = inputObj.AddComponent<Image>();
+                inputImage.color = Color.white;
+                inputField = inputObj.AddComponent<InputField>();
+
+                var inputTextObj = new GameObject("Text");
+                inputTextObj.transform.SetParent(inputObj.transform);
+                var inputText = inputTextObj.AddComponent<Text>();
+                inputText.text = "";
+                inputText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                inputText.color = Color.black;
+                inputText.alignment = TextAnchor.MiddleLeft;
+                inputField.textComponent = inputText;
+
+                var placeholderObj = new GameObject("Placeholder");
+                placeholderObj.transform.SetParent(inputObj.transform);
+                var placeholder = placeholderObj.AddComponent<Text>();
+                placeholder.text = "Enter room name";
+                placeholder.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                placeholder.color = Color.gray;
+                inputField.placeholder = placeholder;
+
+                inputText.rectTransform.sizeDelta = placeholder.rectTransform.sizeDelta = new Vector2(200, 30);
+                inputObj.GetComponent<RectTransform>().sizeDelta = new Vector2(200, 30);
+                inputObj.GetComponent<RectTransform>().localPosition = new Vector3(0, 50, 0);
+
+                // Join Button
+                var buttonObj = new GameObject("JoinButton");
+                buttonObj.transform.SetParent(panelObj.transform);
+                var buttonImage = buttonObj.AddComponent<Image>();
+                buttonImage.color = Color.gray;
+                joinButton = buttonObj.AddComponent<Button>();
+
+                var buttonTextObj = new GameObject("Text");
+                buttonTextObj.transform.SetParent(buttonObj.transform);
+                var buttonText = buttonTextObj.AddComponent<Text>();
+                buttonText.text = "Join Room";
+                buttonText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                buttonText.color = Color.white;
+                buttonText.alignment = TextAnchor.MiddleCenter;
+
+                buttonText.rectTransform.sizeDelta = new Vector2(150, 30);
+                buttonObj.GetComponent<RectTransform>().sizeDelta = new Vector2(150, 30);
+                buttonObj.GetComponent<RectTransform>().localPosition = new Vector3(0, 0, 0);
+
+                joinButton.onClick.AddListener(OnJoinClicked);
+
+                // Refresh Lobby Button
+                var refreshButtonObj = new GameObject("RefreshButton");
+                refreshButtonObj.transform.SetParent(panelObj.transform);
+                var refreshButtonImage = refreshButtonObj.AddComponent<Image>();
+                refreshButtonImage.color = new Color(0.2f, 0.5f, 0.2f);
+                refreshButton = refreshButtonObj.AddComponent<Button>();
+
+                var refreshButtonTextObj = new GameObject("Text");
+                refreshButtonTextObj.transform.SetParent(refreshButtonObj.transform);
+                refreshButtonText = refreshButtonTextObj.AddComponent<Text>();
+                refreshButtonText.text = "Refresh Lobby";
+                refreshButtonText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                refreshButtonText.color = Color.white;
+                refreshButtonText.alignment = TextAnchor.MiddleCenter;
+
+                refreshButtonText.rectTransform.sizeDelta = new Vector2(150, 30);
+                refreshButtonObj.GetComponent<RectTransform>().sizeDelta = new Vector2(150, 30);
+                refreshButtonObj.GetComponent<RectTransform>().localPosition = new Vector3(0, -50, 0);
+
+                refreshButton.onClick.AddListener(OnRefreshClicked);
+            }
+
+            private void OnRefreshClicked()
+            {
+                if (PhotonNetwork.InLobby)
+                {
+                    Debug.Log("[Room Scanner] Leaving lobby to refresh room list...");
+                    refreshButtonText.text = "Reconnecting...";
+                    refreshButton.interactable = false;
+                    PhotonNetwork.LeaveLobby();
+                    StartCoroutine(RejoinLobbyAfterDelay());
+                }
+                else
+                {
+                    Debug.Log("[Room Scanner] Not in lobby, attempting to join...");
+                    PhotonNetwork.JoinLobby();
+                }
+            }
+
+            private IEnumerator RejoinLobbyAfterDelay()
+            {
+                yield return new WaitForSeconds(1f);
+                Debug.Log("[Room Scanner] Rejoining lobby...");
+                PhotonNetwork.JoinLobby();
+                yield return new WaitForSeconds(2f);
+                refreshButtonText.text = "Refresh Lobby";
+                refreshButton.interactable = true;
+            }
+
+            private void OnJoinClicked()
+            {
+                string roomName = inputField.text.Trim();
+                if (!string.IsNullOrEmpty(roomName))
+                {
+                    Debug.Log($"[Room Scanner] Attempting to join room by name: {roomName}");
+                    PhotonNetwork.JoinRoom(roomName);
+                }
+                else
+                {
+                    Debug.LogWarning("[Room Scanner] Room name is empty.");
+                }
+            }
         }
 
         public void OnConnectedToMaster()
@@ -86,29 +253,76 @@ namespace RoomScannerMod
 
         public void OnRoomListUpdate(List<RoomInfo> roomList)
         {
-            Debug.Log($"[Room Scanner] Found {roomList.Count} rooms:");
+            Debug.Log($"[Room Scanner] Room list update received. New count: {roomList.Count}");
             RoomScannerPlugin.CachedRoomList = roomList;
 
+            // First, mark all rooms as inactive
+            foreach (var room in RoomScannerPlugin.AllRoomsEverSeen.Values)
+            {
+                room.IsCurrentlyActive = false;
+            }
+
+            // Update or add rooms from current list
             foreach (var room in roomList)
             {
-                Debug.Log($"[Room Scanner] Room: {room.Name}, Players: {room.PlayerCount}/{room.MaxPlayers}");
-
-                if (room.CustomProperties.Count == 0)
+                if (!room.RemovedFromList)
                 {
-                    Debug.Log("[Room Scanner] - No custom properties found.");
-                    continue;
-                }
-
-                foreach (var kvp in room.CustomProperties)
-                {
-                    string key = kvp.Key?.ToString() ?? "(null key)";
-                    string value = kvp.Value != null ? kvp.Value.ToString() : "null";
-                    Debug.Log($"[Room Scanner] - Property: {key} = {value}");
+                    if (RoomScannerPlugin.AllRoomsEverSeen.TryGetValue(room.Name, out var storedRoom))
+                    {
+                        // Update existing room
+                        storedRoom.LastSeenPlayerCount = room.PlayerCount;
+                        storedRoom.MaxPlayers = room.MaxPlayers;
+                        storedRoom.CustomProperties = room.CustomProperties;
+                        storedRoom.IsCurrentlyActive = true;
+                        storedRoom.LastSeen = System.DateTime.Now;
+                    }
+                    else
+                    {
+                        // Add new room
+                        RoomScannerPlugin.AllRoomsEverSeen[room.Name] = new StoredRoomInfo
+                        {
+                            Name = room.Name,
+                            LastSeenPlayerCount = room.PlayerCount,
+                            MaxPlayers = room.MaxPlayers,
+                            CustomProperties = room.CustomProperties,
+                            IsCurrentlyActive = true,
+                            LastSeen = System.DateTime.Now
+                        };
+                    }
                 }
             }
+
+            // Print all rooms with their status
+            Debug.Log($"[Room Scanner] === ALL ROOMS HISTORY ({RoomScannerPlugin.AllRoomsEverSeen.Count} total) ===");
+            foreach (var kvp in RoomScannerPlugin.AllRoomsEverSeen)
+            {
+                var room = kvp.Value;
+                string status = room.IsCurrentlyActive ? "[ACTIVE]" : "[INACTIVE]";
+                string timeSince = (System.DateTime.Now - room.LastSeen).TotalSeconds < 60
+                    ? $"{(int)(System.DateTime.Now - room.LastSeen).TotalSeconds}s ago"
+                    : $"{(int)(System.DateTime.Now - room.LastSeen).TotalMinutes}m ago";
+
+                Debug.Log($"[Room Scanner] {status} Room: {room.Name}, Players: {room.LastSeenPlayerCount}/{room.MaxPlayers}, Last seen: {timeSince}");
+
+                if (room.CustomProperties != null)
+                {
+                    foreach (var prop in room.CustomProperties)
+                    {
+                        string key = prop.Key?.ToString() ?? "(null key)";
+                        string value = prop.Value != null ? prop.Value.ToString() : "null";
+                        Debug.Log($"[Room Scanner]   - Property: {key} = {value}");
+                    }
+                }
+            }
+            Debug.Log($"[Room Scanner] === Active: {roomList.Count}, Total seen: {RoomScannerPlugin.AllRoomsEverSeen.Count} ===");
         }
 
-        public void OnJoinedLobby() => Debug.Log("[Room Scanner] Joined a Photon lobby.");
+        public void OnJoinedLobby()
+        {
+            Debug.Log("[Room Scanner] Joined a Photon lobby.");
+            Debug.Log("[Room Scanner] Note: Photon automatically sends room list updates periodically while in lobby.");
+            Debug.Log("[Room Scanner] Rooms will accumulate over time. Check console for [ACTIVE] vs [INACTIVE] status.");
+        }
         public void OnLeftLobby() => Debug.Log("[Room Scanner] Left the Photon lobby.");
         public void OnLobbyStatisticsUpdate(List<TypedLobbyInfo> lobbyStatistics) { }
 
@@ -116,16 +330,12 @@ namespace RoomScannerMod
         {
             Debug.Log("[Room Scanner] Successfully joined a room.");
 
-            var sceneName = "Airport"; // fallback
+            var sceneName = "Airport";
             var room = RoomScannerPlugin.LastJoinedRoom;
             if (room != null && room.CustomProperties.TryGetValue("CurrentScene", out var sceneProp) && sceneProp is string scene)
             {
                 sceneName = scene;
                 Debug.Log($"[Room Scanner] Found scene in room properties: {sceneName}");
-            }
-            else
-            {
-                Debug.LogWarning("[Room Scanner] No scene found in room properties, defaulting to Airport");
             }
 
             var connectionService = GameHandler.GetService<ConnectionService>();
@@ -144,23 +354,15 @@ namespace RoomScannerMod
 
         private IEnumerator LoadSceneCoroutine(string sceneName)
         {
-            Debug.Log($"[Room Scanner] Loading scene: {sceneName}");
             PhotonNetwork.LoadLevel(sceneName);
-
-            while (PhotonNetwork.LevelLoadingProgress < 1f)
-            {
-                yield return null;
-            }
-
+            while (PhotonNetwork.LevelLoadingProgress < 1f) yield return null;
             yield return new WaitForSecondsRealtime(3f);
         }
-
 
         public void OnJoinRoomFailed(short returnCode, string message) => Debug.LogError($"[Room Scanner] Failed to join room: {message}");
         public void OnCreateRoomFailed(short returnCode, string message) { }
         public void OnCreatedRoom() { }
         public void OnJoinRandomFailed(short returnCode, string message) { }
-
         public void OnLeftRoom() => Debug.Log("[Room Scanner] Left the room.");
         public void OnFriendListUpdate(List<FriendInfo> friendList) { }
     }
